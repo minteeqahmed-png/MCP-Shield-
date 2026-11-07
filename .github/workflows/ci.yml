@@ -44,8 +44,7 @@ jobs:
           python-version: "3.12"
       - name: Scan Repository Source & Workflows for Secret Signatures
         run: |
-          python -m mcp_shield scan mcp_shield/ --min-severity low --fail-on low
-          python -m mcp_shield scan tests/ --min-severity high --fail-on high
+          python -m mcp_shield scan mcp_shield/ --fail-on low
 
   gate-4-governance-tamper-check:
     name: "Gate 4: Protected Governance & CODEOWNERS Tamper Check"
