@@ -1,11 +1,7 @@
 version: 2
 updates:
-  # Automatically open PRs to keep GitHub Actions secure and up to date
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
-    labels:
-      - "automated-pr"
-      - "security"

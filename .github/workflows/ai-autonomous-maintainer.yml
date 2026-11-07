@@ -3,7 +3,7 @@ name: Autonomous PR & Contributor Backlog Generator
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 9 * * 1" # Every Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
 
 permissions:
   contents: write
@@ -30,25 +30,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          python -c "
-          import pathlib
-
-          scanners_path = pathlib.Path('mcp_shield/scanners.py')
-          text = scanners_path.read_text(encoding='utf-8')
-          if 'SEC-009' not in text:
-              target = '    (\n        \"SEC-006\",'
-              addition = '''    (
-          \"SEC-009\",
-          \"Hardcoded Hugging Face / Stripe API Token\",
-          re.compile(r\"\\\\b(hf_[A-Za-z0-9]{30,}|sk_live_[0-9a-zA-Z]{24,})\\\\b\"),
-          Severity.CRITICAL,
-      ),
-  ''' + target
-              scanners_path.write_text(text.replace(target, addition, 1), encoding='utf-8')
-              pathlib.Path('.pr_ready').write_text('SEC-009', encoding='utf-8')
-          "
-
+          python -c "import pathlib, re; p = pathlib.Path('mcp_shield/scanners.py'); t = p.read_text(encoding='utf-8'); rule = '    (\"SEC-009\", \"Hardcoded Hugging Face / Stripe API Token\", re.compile(r\"\\b(hf_[A-Za-z0-9]{30,}|sk_live_[0-9a-zA-Z]{24,})\\b\"), Severity.CRITICAL),\n'; (p.write_text(t.replace('SECRET_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity]] = [\n', 'SECRET_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity]] = [\n' + rule, 1), encoding='utf-8'), pathlib.Path('.pr_ready').write_text('SEC-009', encoding='utf-8')) if 'SEC-009' not in t else None"
           if [ -f .pr_ready ]; then
             rm .pr_ready
             BRANCH="ai-maintainer/add-sec-009-hf-stripe-tokens"
@@ -56,14 +38,5 @@ jobs:
             git add mcp_shield/scanners.py
             git commit -m "feat(scanners): add SEC-009 Hugging Face and Stripe live token detection"
             git push origin "$BRANCH" --force
-            gh pr create \
-              --repo "$REPO" \
-              --base main \
-              --head "$BRANCH" \
-              --title "feat(scanners): add SEC-009 Hugging Face & Stripe token detection" \
-              --body "### 🤖 Autonomous AI Maintainer Pull Request
-
-          This PR was automatically generated after scanning \`mcp_shield/scanners.py\` for missing credential signatures:
-          - Adds **\`SEC-009\`** to detect hardcoded Hugging Face (\`hf_...\`) and Stripe (\`sk_live_...\`) tokens.
-          - Ready for **CodeRabbit** automated security review and community contributors to add additional unit test cases!" || true
+            gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "feat(scanners): add SEC-009 Hugging Face & Stripe token detection" --body "Automated AI Maintainer PR: adds SEC-009 to detect hardcoded Hugging Face (hf_...) and Stripe (sk_live_...) tokens. Ready for CodeRabbit review and community test contributions." || true
           fi

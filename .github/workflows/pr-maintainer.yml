@@ -3,8 +3,6 @@ name: AI Maintainer & PR Scorecard Bot
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  issues:
-    types: [opened]
 
 permissions:
   contents: read
@@ -18,43 +16,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        if: github.event_name == 'pull_request'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Run mcp-shield Self-Audit & Post PR Maintainer Comment
-        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          python -c "
-          import json, os, pathlib, subprocess, tomllib
-          from mcp_shield.advanced_scanners import scan_python_ast
-
-          deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text()).get('project', {}).get('dependencies', [])
-          dep_status = '✅ Passed (`dependencies = []`)' if deps == [] else f'❌ Failed (External dependencies detected: {deps})'
-
-          ast_findings = [f for p in pathlib.Path('mcp_shield').rglob('*.py') for f in scan_python_ast(p.read_text(encoding='utf-8'), str(p))]
-          ast_status = '✅ Passed (0 dangerous AST sinks in `mcp_shield/`)' if not ast_findings else f'❌ Failed ({len(ast_findings)} AST sink findings)'
-
-          test_proc = subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py'], capture_output=True, text=True)
-          test_status = '✅ Passed all unit tests' if test_proc.returncode == 0 else '❌ Unit tests failed'
-
-          body = f'''### 🤖 mcp-shield Automated Maintainer Gate
-
-          Thank you for contributing to **MCP-Shield-**! Alongside **CodeRabbit**, this automated maintainer bot verified your Pull Request against our repository protection rules:
-
-          | Security & Quality Gate | Status |
-          | :--- | :--- |
-          | **1. Zero-Dependency Supply-Chain Lock** | {dep_status} |
-          | **2. Source Code AST Safety Check** | {ast_status} |
-          | **3. Automated Unit Test Suite** | {test_status} |
-
-          *Note: Final merge requires approval from `@minteeqahmed-png` via `CODEOWNERS`.*
-          '''
-          pathlib.Path('pr_comment.md').write_text(body.strip(), encoding='utf-8')
-          "
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file pr_comment.md
+          python -c "import pathlib, subprocess, tomllib; from mcp_shield.advanced_scanners import scan_python_ast; deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text()).get('project', {}).get('dependencies', []); dep_s = 'Passed (dependencies = [])' if deps == [] else f'Failed ({deps})'; ast_f = [f for p in pathlib.Path('mcp_shield').rglob('*.py') for f in scan_python_ast(p.read_text(encoding='utf-8'), str(p))]; ast_s = 'Passed (0 AST sinks)' if not ast_f else f'Failed ({len(ast_f)} sinks)'; tp = subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py'], capture_output=True); test_s = 'Passed all unit tests' if tp.returncode == 0 else 'Unit tests failed'; body = f'### 🤖 mcp-shield Automated Maintainer Gate\n\n| Security & Quality Gate | Status |\n| :--- | :--- |\n| **1. Zero-Dependency Lock** | {dep_s} |\n| **2. Source AST Safety** | {ast_s} |\n| **3. Unit Test Suite** | {test_s} |\n\n*Final merge requires approval from `@minteeqahmed-png` via `CODEOWNERS`.*'; pathlib.Path('pr_comment.md').write_text(body, encoding='utf-8')"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file pr_comment.md || true
