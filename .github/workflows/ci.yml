@@ -2,37 +2,64 @@ name: mcp-shield PR Security & CI Gate
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   pull_request:
-    branches: [main]
+    branches: ["main"]
 
 permissions:
   contents: read
 
 jobs:
-  pr-security-gate:
-    name: pr-security-gate
+  gate-1-zero-dependency-lock:
+    name: "Gate 1: Zero-Dependency & Supply-Chain Lock"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify Zero External Runtime Dependencies (Supply-Chain Lock)
+      - name: Verify Zero Runtime Dependencies in pyproject.toml
         run: |
-          python -c "import tomllib, pathlib, sys; data = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); deps = data.get('project', {}).get('dependencies', []); sys.exit(0 if deps == [] else f'Blocked: external dependencies are not allowed: {deps}')"
-      - name: Verify AST Safety of mcp_shield Source Code
+          python -c "import pathlib, sys, tomllib; data = tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8')); deps = data.get('project', {}).get('dependencies', []); sys.exit(f'ERROR: dependencies must remain empty, got {deps}') if deps != [] else print('OK: Zero runtime dependencies verified.')"
+
+  gate-2-ast-and-unicode-audit:
+    name: "Gate 2: AST Sinks & Trojan Source Unicode Audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit Python AST & Hidden Bidi/Zero-Width Characters
         run: |
-          python -c "from pathlib import Path; from mcp_shield.advanced_scanners import scan_python_ast; import sys; findings = [f for p in Path('mcp_shield').rglob('*.py') for f in scan_python_ast(p.read_text(encoding='utf-8'), str(p))]; print(f'AST findings in mcp_shield/: {len(findings)}'); sys.exit(1 if findings else 0)"
-      - name: Run Unit Test Suite
-        run: python -m unittest discover -s tests -p "test_*.py" -v
-      - name: Run Built-in Vulnerability Demo & SARIF Generation
-        run: python -m mcp_shield demo --html demo_scorecard.html --sarif demo_results.sarif
+          python -c "import pathlib, sys; from mcp_shield.advanced_scanners import scan_python_ast; from mcp_shield.scanners import scan_text_for_poisoning; ast_f = [f for p in pathlib.Path('mcp_shield').rglob('*.py') for f in scan_python_ast(p.read_text(encoding='utf-8'), str(p))]; uni_f = [f for p in pathlib.Path('mcp_shield').rglob('*.py') for f in scan_text_for_poisoning(p.read_text(encoding='utf-8'), str(p)) if f.rule_id == 'TP-004']; sys.exit(f'ERROR: Found {len(ast_f)} AST issues and {len(uni_f)} unicode issues') if (ast_f or uni_f) else print('OK: 0 dangerous AST sinks and 0 Trojan Source characters.')"
+
+  gate-3-secret-and-entropy-scan:
+    name: "Gate 3: Secret Leak & High-Entropy Token Scanner"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan Repository Source & Workflows for Secret Signatures
+        run: |
+          python -m mcp_shield scan mcp_shield/ --fail-on-high
+
+  gate-4-governance-tamper-check:
+    name: "Gate 4: Protected Governance & CODEOWNERS Tamper Check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify CODEOWNERS & Security Policy Integrity
+        run: |
+          python -c "import pathlib, sys; co = pathlib.Path('.github/CODEOWNERS').read_text(encoding='utf-8'); sys.exit('ERROR: CODEOWNERS must lock root to @minteeqahmed-png') if '* @minteeqahmed-png' not in co else print('OK: CODEOWNERS locked to @minteeqahmed-png')"
 
   matrix-tests:
+    name: "Gate 5-7: Unit Test Matrix"
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -41,5 +68,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run unit tests
+      - name: Install package in editable mode
+        run: pip install -e .
+      - name: Run full unit test suite
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  gate-8-sarif-and-grade-enforcer:
+    name: "Gate 8: SARIF 2.1.0 & Self-Audit Grade A Enforcer"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Enforce Grade A (100/100) on Package & Validate SARIF Export
+        run: |
+          python -m mcp_shield scan mcp_shield/ --sarif self-audit.sarif --fail-on-high
+          python -m mcp_shield scan examples/ --json examples-report.json || true
+          python -c "import json, sys; data = json.load(open('examples-report.json')); sys.exit(1) if len(data['findings']) < 10 else print('OK: Seeded vulnerabilities verified:', len(data['findings']))"

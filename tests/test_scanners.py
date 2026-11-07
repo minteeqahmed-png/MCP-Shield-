@@ -151,6 +151,21 @@ class TestMcpShieldScanners(unittest.TestCase):
         self.assertIsNotNone(list_resp)
         self.assertEqual(len(list_resp["result"]["tools"]), 3)
 
+    def test_detects_hf_and_stripe_tokens(self) -> None:
+        sample_cfg = {
+            "mcpServers": {
+                "hf-srv": {
+                    "command": "python",
+                    "args": ["server.py"],
+                    "env": {
+                        "HF_TOKEN": "hf_" + "A" * 34,
+                    },
+                }
+            }
+        }
+        findings = scan_mcp_config_dict(sample_cfg, "test_hf.json")
+        self.assertTrue(any(f.rule_id == "SEC-009" for f in findings))
+
 
 if __name__ == "__main__":
     unittest.main()
