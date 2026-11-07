@@ -1,0 +1,5 @@
+# Require @minteeqahmed-png approval on all files and pull requests
+* @minteeqahmed-png
+/.github/ @minteeqahmed-png
+/mcp_shield/ @minteeqahmed-png
+/pyproject.toml @minteeqahmed-png

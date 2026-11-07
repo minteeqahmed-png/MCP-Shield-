@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: ".github/**"
+      instructions: |
+        CRITICAL PROTECTION RULE: Flag and request changes on any Pull Request that weakens CI checks,
+        modifies CODEOWNERS, or removes branch/PR security gates.
+    - path: "pyproject.toml"
+      instructions: |
+        CRITICAL PROTECTION RULE: `dependencies = []` must remain empty. Request changes if any external
+        runtime dependency is added to prevent supply-chain attacks.
+    - path: "mcp_shield/**/*.py"
+      instructions: |
+        Review for Python security best practices, regex ReDoS safety, subprocess sandboxing,
+        accurate SARIF v2.1.0 formatting, and zero-external-dependency compatibility (Python 3.10+).
+        Request changes if any existing security detection rule is deleted or weakened without tests.
+    - path: "examples/**"
+      instructions: |
+        Files in examples/ intentionally contain simulated vulnerable MCP configurations and poisoned skills for testing.
+        Do not flag simulated demo payloads as accidental credential leaks.
+chat:
+  auto_reply: true

@@ -1,0 +1,6 @@
+- id: mcp-shield
+  name: mcp-shield AI Agent & MCP Security Scanner
+  description: Audit MCP configurations, skills, and tool schemas for secrets, tool poisoning, and dangerous AST sinks.
+  entry: mcp-shield scan --fail-on-high
+  language: python
+  pass_filenames: false

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+demo_scorecard.html
+demo_results.sarif
+scorecard.html
+findings.json
+*.hardened.json
+mcp-shield.lock.json
