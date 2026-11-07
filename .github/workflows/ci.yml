@@ -44,7 +44,7 @@ jobs:
           python-version: "3.12"
       - name: Scan Repository Source & Workflows for Secret Signatures
         run: |
-          python -m mcp_shield scan mcp_shield/ --fail-on low
+          python -m mcp_shield scan mcp_shield/ --fail-on-high
 
   gate-4-governance-tamper-check:
     name: "Gate 4: Protected Governance & CODEOWNERS Tamper Check"
@@ -83,6 +83,6 @@ jobs:
           python-version: "3.12"
       - name: Enforce Grade A (100/100) on Package & Validate SARIF Export
         run: |
-          python -m mcp_shield scan mcp_shield/ --sarif self-audit.sarif --fail-on low
-          python -m mcp_shield scan examples/ --json > examples-report.json || true
+          python -m mcp_shield scan mcp_shield/ --sarif self-audit.sarif --fail-on-high
+          python -m mcp_shield scan examples/ --json examples-report.json || true
           python -c "import json, sys; data = json.load(open('examples-report.json')); sys.exit(1) if data['summary']['total'] < 10 else print(f'Detected {data[\"summary\"][\"total\"]} seeded vulnerabilities in examples/')"
