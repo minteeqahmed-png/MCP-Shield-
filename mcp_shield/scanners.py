@@ -52,6 +52,12 @@ SECRET_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity]] = [
         re.compile(r"\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis)://[^/\s:@]+:[^/\s@]+@[^\s\"']+"),
         Severity.CRITICAL,
     ),
+    (
+        "SEC-009",
+        "Hardcoded Hugging Face or Stripe API Token",
+        re.compile(r"\b(hf_[A-Za-z0-9]{30,}|(?:sk|rk)_live_[A-Za-z0-9]{20,})\b"),
+        Severity.CRITICAL,
+    ),
 ]
 
 # 2. Tool Poisoning & Prompt Injection Signatures
