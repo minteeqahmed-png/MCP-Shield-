@@ -16,6 +16,7 @@ from mcp_shield.models import Finding, ScanResult, Severity
 
 # 1. Secret & API Key Signatures
 SECRET_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity]] = [
+    ("SEC-009", "Hardcoded Hugging Face / Stripe API Token", re.compile(r"(hf_[A-Za-z0-9]{30,}|sk_live_[0-9a-zA-Z]{24,})"), Severity.CRITICAL),
     (
         "SEC-001",
         "Hardcoded OpenAI / Anthropic / AI API Key",
