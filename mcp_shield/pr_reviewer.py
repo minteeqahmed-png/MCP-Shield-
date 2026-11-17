@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
-import tomllib
 from typing import Dict, List, Tuple
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # Python 3.10 fallback
+    tomllib = None  # type: ignore[assignment]
 
 from mcp_shield.advanced_scanners import scan_python_ast
 from mcp_shield.scanners import (
@@ -128,6 +134,37 @@ def _verify_codeowners_lock(codeowners_path: Path, required_owner: str = "@minte
     return has_root_lock
 
 
+def _check_zero_dependencies(pyproject_path: Path) -> Tuple[bool, List[str]]:
+    """Return (is_zero_dep, deps_or_error) from pyproject.toml across Python 3.10+."""
+    if not pyproject_path.exists():
+        return False, ["missing pyproject.toml"]
+    try:
+        raw = pyproject_path.read_text(encoding="utf-8", errors="replace")
+        if tomllib is not None:
+            pyproject_data = tomllib.loads(raw)
+            deps = pyproject_data.get("project", {}).get("dependencies", [])
+            return deps == [], list(deps) if isinstance(deps, list) else ["invalid dependencies"]
+
+        in_project = False
+        section_lines: List[str] = []
+        for raw_line in raw.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("["):
+                in_project = stripped == "[project]"
+                continue
+            if in_project and not stripped.startswith("#"):
+                section_lines.append(raw_line)
+        match = re.search(r"(?ms)^\s*dependencies\s*=\s*(\[[^\]]*\])", "\n".join(section_lines))
+        if not match:
+            return False, ["missing dependencies"]
+        deps = ast.literal_eval(match.group(1))
+        if not isinstance(deps, list):
+            return False, ["invalid dependencies"]
+        return deps == [], deps
+    except Exception as exc:
+        return False, [str(exc)]
+
+
 def build_pr_review_markdown(
     base_ref: str = "origin/main",
     head_ref: str = "HEAD",
@@ -150,17 +187,7 @@ def build_pr_review_markdown(
     changed = get_changed_files(base_ref, head_ref, repo_root=repo_root)
 
     # 1. Zero-Dependency Lock
-    pyproject_path = repo_root / "pyproject.toml"
-    deps: List[str] = []
-    if pyproject_path.exists():
-        try:
-            pyproject_data = tomllib.loads(pyproject_path.read_text(encoding="utf-8", errors="replace"))
-            deps = pyproject_data.get("project", {}).get("dependencies", [])
-            gate1_ok = deps == []
-        except (tomllib.TOMLDecodeError, OSError):
-            gate1_ok = False
-    else:
-        gate1_ok = False
+    gate1_ok, deps = _check_zero_dependencies(repo_root / "pyproject.toml")
 
     pkg_dir = repo_root / "mcp_shield"
     if pkg_dir.exists():
