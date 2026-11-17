@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import sys
+import json
 from pathlib import Path
+import sys
 from typing import List
 
 from mcp_shield import __version__
 from mcp_shield.fixer import fix_file
 from mcp_shield.mcp_server import run_stdio_server
-from mcp_shield.models import ScanResult
+from mcp_shield.models import ScanResult, Severity
+from mcp_shield.policy import (
+    evaluate_config_against_policy,
+    load_policy,
+    write_default_policy,
+)
 from mcp_shield.prober import audit_and_lock_tools, probe_stdio_mcp_server
 from mcp_shield.proxy import run_proxy_firewall
 from mcp_shield.reporter import (
@@ -19,13 +25,17 @@ from mcp_shield.reporter import (
     export_sarif_report,
     format_terminal_report,
 )
+from mcp_shield.sbom import format_sbom_table, generate_mcp_sbom
 from mcp_shield.scanners import discover_default_mcp_configs, scan_path
+
+
+_SEVERITY_WEIGHTS = {sev.value.lower(): sev.weight for sev in Severity}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcp-shield",
-        description="🛡️ mcp-shield: AI Agent & MCP Security Scanner, Prober, Auto-Fixer, and Runtime Firewall",
+        description="🛡️ mcp-shield: AI Agent & MCP Security Scanner, Prober, Auto-Fixer, Policy Engine, SBOM & Runtime Firewall",
     )
     parser.add_argument(
         "--version",
@@ -68,6 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-color",
         action="store_true",
         help="Disable ANSI color codes in terminal output.",
+    )
+    scan_parser.add_argument(
+        "--min-severity",
+        choices=["low", "medium", "high", "critical"],
+        default="low",
+        help="Filter displayed and exported findings to this severity level or higher (default: low).",
+    )
+    scan_parser.add_argument(
+        "--fail-on",
+        choices=["low", "medium", "high", "critical"],
+        default=None,
+        help="Return non-zero exit code (1) if findings at or above this severity are found.",
     )
     scan_parser.add_argument(
         "--fail-on-high",
@@ -140,13 +162,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Command and arguments for the downstream MCP server.",
     )
 
-    # 6. discover command
+    # 6. policy command (NEW in v0.3.0)
+    policy_parser = subparsers.add_parser(
+        "policy",
+        help="Initialize or evaluate a declarative MCP security policy (allowlists, blocked domains, transport rules).",
+    )
+    policy_parser.add_argument(
+        "action",
+        choices=["init", "check"],
+        help="'init' writes a starter mcp-shield-policy.json; 'check' validates a target config against the policy.",
+    )
+    policy_parser.add_argument(
+        "target",
+        nargs="?",
+        default="examples/vulnerable_mcp_config.json",
+        help="Target MCP configuration JSON file to check (for 'policy check').",
+    )
+    policy_parser.add_argument(
+        "--policy-file",
+        default="mcp-shield-policy.json",
+        help="Path to the security policy JSON file (default: mcp-shield-policy.json).",
+    )
+
+    # 7. sbom command (NEW in v0.3.0)
+    sbom_parser = subparsers.add_parser(
+        "sbom",
+        help="Generate a CycloneDX v1.5 Software Bill of Materials (SBOM) & inventory for configured MCP servers.",
+    )
+    sbom_parser.add_argument(
+        "target",
+        nargs="?",
+        default="examples",
+        help="File or directory containing MCP config JSON files (default: examples).",
+    )
+    sbom_parser.add_argument(
+        "-o",
+        "--output",
+        dest="sbom_out",
+        metavar="FILE",
+        help="Write CycloneDX v1.5 JSON SBOM to the specified file path.",
+    )
+
+    # 8. discover command
     subparsers.add_parser(
         "discover",
         help="Auto-discover and scan standard local MCP configuration files on this machine.",
     )
 
-    # 7. serve command (MCP stdio server)
+    # 9. serve command (MCP stdio server)
     subparsers.add_parser(
         "serve",
         help="Run mcp-shield as a Model Context Protocol (MCP) stdio server for AI agents.",
@@ -180,6 +243,36 @@ def main(argv: List[str] | None = None) -> int:
             print(f"   ✔ {item}")
         if not fixes:
             print("   No automatic modifications were needed.")
+        return 0
+
+    if args.command == "policy":
+        policy_path = Path(args.policy_file)
+        if args.action == "init":
+            written = write_default_policy(policy_path)
+            print(f"📜 Starter security policy written to: {written.resolve()}")
+            return 0
+        target_path = Path(args.target)
+        if not target_path.exists():
+            print(f"Error: target config '{target_path}' not found.", file=sys.stderr)
+            return 2
+        cfg = json.loads(target_path.read_text(encoding="utf-8"))
+        pol = load_policy(policy_path if policy_path.exists() else None)
+        findings = evaluate_config_against_policy(cfg, pol, str(target_path))
+        res = ScanResult(scanned_targets=[f"policy:{target_path}"], findings=findings)
+        print(format_terminal_report(res))
+        return 1 if findings else 0
+
+    if args.command == "sbom":
+        target_path = Path(args.target)
+        if not target_path.exists():
+            print(f"Error: target '{target_path}' not found.", file=sys.stderr)
+            return 2
+        sbom_data = generate_mcp_sbom(target_path)
+        print(format_sbom_table(sbom_data))
+        if getattr(args, "sbom_out", None):
+            out_file = Path(args.sbom_out)
+            out_file.write_text(json.dumps(sbom_data, indent=2) + "\n", encoding="utf-8")
+            print(f"📦 CycloneDX v1.5 SBOM saved to: {out_file.resolve()}")
         return 0
 
     if args.command == "probe":
@@ -239,6 +332,11 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     result = scan_path(target_path)
+    min_sev = str(getattr(args, "min_severity", "low") or "low").lower()
+    min_weight = _SEVERITY_WEIGHTS[min_sev]
+    if min_weight > _SEVERITY_WEIGHTS["low"]:
+        result.findings = [f for f in result.findings if f.severity.weight >= min_weight]
+
     use_color = not getattr(args, "no_color", False)
     print(format_terminal_report(result, use_color=use_color))
 
@@ -257,9 +355,16 @@ def main(argv: List[str] | None = None) -> int:
         export_html_report(result, out_html)
         print(f"📊 HTML Security Scorecard saved to: {out_html.resolve()}")
 
+    fail_thresholds: List[int] = []
+    fail_on_opt = getattr(args, "fail_on", None)
+    if fail_on_opt:
+        fail_thresholds.append(_SEVERITY_WEIGHTS[str(fail_on_opt).lower()])
     if getattr(args, "fail_on_high", False):
-        counts = result.counts_by_severity()
-        if counts["CRITICAL"] > 0 or counts["HIGH"] > 0:
+        fail_thresholds.append(_SEVERITY_WEIGHTS["high"])
+
+    if fail_thresholds:
+        fail_weight = min(fail_thresholds)
+        if any(f.severity.weight >= fail_weight for f in result.findings):
             return 1
 
     return 0

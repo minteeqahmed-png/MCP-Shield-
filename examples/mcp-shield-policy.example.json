@@ -1,0 +1,19 @@
+{
+  "version": "1.0",
+  "organization": "enterprise-ai-security-policy",
+  "allowed_commands": ["npx", "uvx", "python", "python3", "node", "docker"],
+  "allowed_package_prefixes": [
+    "@modelcontextprotocol/",
+    "mcp-server-",
+    "mcp_shield"
+  ],
+  "blocked_domains": [
+    "webhook.site",
+    "requestbin.com",
+    "ngrok-free.app",
+    "burpcollaborator.net",
+    "interact.sh"
+  ],
+  "require_env_placeholders": true,
+  "require_https_transport": true
+}

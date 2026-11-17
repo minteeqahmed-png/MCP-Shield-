@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from mcp_shield.scanners import SECRET_PATTERNS, mask_secret, scan_text_for_poisoning
 
@@ -48,14 +48,24 @@ def redact_secrets_in_text(text: str) -> str:
     return redacted
 
 
+def _redact_value(val: Any) -> Any:
+    """Recursively redact secrets from decoded JSON values without ASCII-escaping issues."""
+    if isinstance(val, str):
+        return redact_secrets_in_text(val)
+    if isinstance(val, list):
+        return [_redact_value(item) for item in val]
+    if isinstance(val, dict):
+        return {
+            (redact_secrets_in_text(k) if isinstance(k, str) else k): _redact_value(v)
+            for k, v in val.items()
+        }
+    return val
+
+
 def sanitize_outbound_response(message: Dict[str, Any]) -> Dict[str, Any]:
     """Redact secrets from downstream server responses before forwarding to the AI client."""
-    serialized = json.dumps(message)
-    redacted = redact_secrets_in_text(serialized)
-    try:
-        return json.loads(redacted)
-    except json.JSONDecodeError:
-        return message
+    sanitized = _redact_value(message)
+    return sanitized if isinstance(sanitized, dict) else message
 
 
 def run_proxy_firewall(downstream_cmd: List[str]) -> int:

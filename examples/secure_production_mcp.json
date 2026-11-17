@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "filesystem-workspace": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem@2025.1.0", "./workspace"],
+      "env": {
+        "MCP_LOG_LEVEL": "${MCP_LOG_LEVEL}"
+      }
+    },
+    "github-integration": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-github@2025.1.0"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    },
+    "enterprise-gateway": {
+      "url": "https://mcp-gateway.internal.example.com/sse",
+      "env": {
+        "GATEWAY_BEARER_TOKEN": "${GATEWAY_BEARER_TOKEN}"
+      }
+    }
+  }
+}
