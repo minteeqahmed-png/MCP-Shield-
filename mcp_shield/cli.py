@@ -11,7 +11,7 @@ from typing import List
 from mcp_shield import __version__
 from mcp_shield.fixer import fix_file
 from mcp_shield.mcp_server import run_stdio_server
-from mcp_shield.models import ScanResult
+from mcp_shield.models import ScanResult, Severity
 from mcp_shield.policy import (
     evaluate_config_against_policy,
     load_policy,
@@ -27,6 +27,9 @@ from mcp_shield.reporter import (
 )
 from mcp_shield.sbom import format_sbom_table, generate_mcp_sbom
 from mcp_shield.scanners import discover_default_mcp_configs, scan_path
+
+
+_SEVERITY_WEIGHTS = {sev.value.lower(): sev.weight for sev in Severity}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-color",
         action="store_true",
         help="Disable ANSI color codes in terminal output.",
+    )
+    scan_parser.add_argument(
+        "--min-severity",
+        choices=["low", "medium", "high", "critical"],
+        default="low",
+        help="Filter displayed and exported findings to this severity level or higher (default: low).",
+    )
+    scan_parser.add_argument(
+        "--fail-on",
+        choices=["low", "medium", "high", "critical"],
+        default=None,
+        help="Return non-zero exit code (1) if findings at or above this severity are found.",
     )
     scan_parser.add_argument(
         "--fail-on-high",
@@ -317,6 +332,11 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     result = scan_path(target_path)
+    min_sev = str(getattr(args, "min_severity", "low") or "low").lower()
+    min_weight = _SEVERITY_WEIGHTS[min_sev]
+    if min_weight > _SEVERITY_WEIGHTS["low"]:
+        result.findings = [f for f in result.findings if f.severity.weight >= min_weight]
+
     use_color = not getattr(args, "no_color", False)
     print(format_terminal_report(result, use_color=use_color))
 
@@ -335,9 +355,16 @@ def main(argv: List[str] | None = None) -> int:
         export_html_report(result, out_html)
         print(f"📊 HTML Security Scorecard saved to: {out_html.resolve()}")
 
+    fail_thresholds: List[int] = []
+    fail_on_opt = getattr(args, "fail_on", None)
+    if fail_on_opt:
+        fail_thresholds.append(_SEVERITY_WEIGHTS[str(fail_on_opt).lower()])
     if getattr(args, "fail_on_high", False):
-        counts = result.counts_by_severity()
-        if counts["CRITICAL"] > 0 or counts["HIGH"] > 0:
+        fail_thresholds.append(_SEVERITY_WEIGHTS["high"])
+
+    if fail_thresholds:
+        fail_weight = min(fail_thresholds)
+        if any(f.severity.weight >= fail_weight for f in result.findings):
             return 1
 
     return 0

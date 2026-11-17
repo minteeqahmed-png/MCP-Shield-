@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from mcp_shield.advanced_scanners import (
     scan_base64_obfuscated_payloads,
@@ -196,12 +197,82 @@ def mask_secret(val: str) -> str:
     return f"{val[:6]}...{val[-3:]}"
 
 
-def scan_text_for_poisoning(text: str, target_label: str) -> List[Finding]:
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_SCANNABLE_GLOBS = ("*.json", "*.md", "*.py", "*.yaml", "*.yml", ".env*")
+_SIGNATURE_CONSTANT_RULES: Dict[Tuple[Path, str], Set[str]] = {
+    ((_PACKAGE_DIR / "scanners.py").resolve(), "SECRET_PATTERNS"): {
+        "SEC-001", "SEC-002", "SEC-003", "SEC-004",
+        "SEC-005", "SEC-006", "SEC-009", "SEC-010",
+    },
+    ((_PACKAGE_DIR / "scanners.py").resolve(), "POISONING_PATTERNS"): {
+        "TP-001", "TP-002", "TP-003",
+    },
+    ((_PACKAGE_DIR / "scanners.py").resolve(), "SENSITIVE_PATHS"): {"TP-002"},
+    ((_PACKAGE_DIR / "scanners.py").resolve(), "_SCANNABLE_GLOBS"): {"TP-002"},
+    ((_PACKAGE_DIR / "advanced_scanners.py").resolve(), "SUSPICIOUS_DECODED_RE"): {
+        "TP-001", "TP-002", "TP-003",
+    },
+    ((_PACKAGE_DIR / "proxy.py").resolve(), "BLOCKED_ARG_PATTERNS"): {
+        "TP-002", "TP-003",
+    },
+    ((_PACKAGE_DIR / "policy.py").resolve(), "DEFAULT_POLICY"): {"TP-003"},
+}
+
+
+def _extract_signature_exempt_lines(
+    file_path: Path,
+    source_code: str,
+) -> Dict[int, Set[str]]:
+    """Map 1-based line numbers to allowlisted rule IDs for known signature constants."""
+    try:
+        resolved = file_path.resolve()
+    except OSError:
+        return {}
+
+    module_rules = {
+        const_name: rules
+        for (mod_path, const_name), rules in _SIGNATURE_CONSTANT_RULES.items()
+        if mod_path == resolved
+    }
+    if not module_rules:
+        return {}
+
+    try:
+        tree = ast.parse(source_code, filename=str(resolved))
+    except SyntaxError:
+        return {}
+
+    exempt_lines: Dict[int, Set[str]] = {}
+    for node in tree.body:
+        target_names: List[str] = []
+        if isinstance(node, ast.Assign):
+            target_names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target_names = [node.target.id]
+
+        for name in target_names:
+            if name in module_rules:
+                start_ln = getattr(node, "lineno", 0)
+                end_ln = getattr(node, "end_lineno", start_ln) or start_ln
+                for ln in range(start_ln, end_ln + 1):
+                    exempt_lines.setdefault(ln, set()).update(module_rules[name])
+    return exempt_lines
+
+
+def scan_text_for_poisoning(
+    text: str,
+    target_label: str,
+    exempt_line_rules: Dict[int, Set[str]] | None = None,
+) -> List[Finding]:
     """Scan raw text (tool descriptions, SKILL.md, prompts) for tool poisoning, Base64 payloads & secrets."""
     findings: List[Finding] = []
 
     for rule_id, title, pattern, severity, remediation in POISONING_PATTERNS:
         for match in pattern.finditer(text):
+            if exempt_line_rules:
+                lineno = text.count("\n", 0, match.start()) + 1
+                if rule_id in exempt_line_rules.get(lineno, ()):
+                    continue
             snippet = match.group(0)
             if rule_id == "TP-004":
                 snippet = f"Unicode U+{ord(snippet[0]):04X} at offset {match.start()}"
@@ -222,6 +293,10 @@ def scan_text_for_poisoning(text: str, target_label: str) -> List[Finding]:
 
     for rule_id, title, pattern, severity in SECRET_PATTERNS:
         for match in pattern.finditer(text):
+            if exempt_line_rules:
+                lineno = text.count("\n", 0, match.start()) + 1
+                if rule_id in exempt_line_rules.get(lineno, ()):
+                    continue
             findings.append(
                 Finding(
                     rule_id=rule_id,
@@ -475,7 +550,7 @@ def scan_path(target_path: Path) -> ScanResult:
     if target_path.is_file():
         files_to_scan.append(target_path)
     elif target_path.is_dir():
-        for ext in ("*.json", "*.md", "*.py", "*.yaml", "*.yml", ".env*"):
+        for ext in _SCANNABLE_GLOBS:
             files_to_scan.extend(target_path.rglob(ext))
 
     skip_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
@@ -511,11 +586,10 @@ def scan_path(target_path: Path) -> ScanResult:
                     result.findings.extend(scan_text_for_poisoning(content, rel_label))
         elif suffix == ".py":
             result.findings.extend(scan_python_ast(content, rel_label))
-            is_self_pkg = "mcp_shield" in file_path.parts
-            for f in scan_text_for_poisoning(content, rel_label):
-                if is_self_pkg and f.rule_id in {"TP-001", "TP-002", "TP-003", "TP-006", "SEC-010"}:
-                    continue
-                result.findings.append(f)
+            exempt_lines = _extract_signature_exempt_lines(file_path, content)
+            result.findings.extend(
+                scan_text_for_poisoning(content, rel_label, exempt_line_rules=exempt_lines)
+            )
         else:
             result.findings.extend(scan_text_for_poisoning(content, rel_label))
 
