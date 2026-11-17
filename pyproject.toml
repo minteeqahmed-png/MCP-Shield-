@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-shield"
-version = "0.1.0"
-description = "AI Agent and MCP Security Scanner. Protects local development environments by auditing Model Context Protocol configs, decoding hidden prompt injections, checking Python AST for dangerous execution, and enforcing supply chain hardening."
+version = "0.3.0"
+description = "AI Agent and MCP Security Scanner, Policy Engine, CycloneDX SBOM Generator & Runtime Firewall."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -19,6 +19,8 @@ keywords = [
     "llm-security",
     "prompt-injection",
     "tool-poisoning",
+    "sbom",
+    "cyclonedx",
     "cybersecurity",
     "ai-agents",
 ]

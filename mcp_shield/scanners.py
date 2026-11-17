@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Tuple
 
 from mcp_shield.advanced_scanners import (
@@ -52,6 +52,18 @@ SECRET_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity]] = [
         re.compile(r"\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis)://[^/\s:@]+:[^/\s@]+@[^\s\"']+"),
         Severity.CRITICAL,
     ),
+    (
+        "SEC-009",
+        "Hardcoded Hugging Face or Stripe API Token",
+        re.compile(r"\b(hf_[A-Za-z0-9]{30,}|(?:sk|rk)_live_[A-Za-z0-9]{20,})\b"),
+        Severity.CRITICAL,
+    ),
+    (
+        "SEC-010",
+        "Hardcoded PEM / OpenSSH Private Key",
+        re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+        Severity.CRITICAL,
+    ),
 ]
 
 # 2. Tool Poisoning & Prompt Injection Signatures
@@ -97,9 +109,38 @@ POISONING_PATTERNS: List[Tuple[str, str, re.Pattern[str], Severity, str]] = [
         Severity.HIGH,
         "Strip zero-width and bidirectional control characters used to hide malicious instructions from human code review.",
     ),
+    (
+        "TP-006",
+        "Cross-Server Tool Shadowing / Call Hijacking Directive",
+        re.compile(
+            r"(before\s+(?:calling|invoking|using)\s+[a-z0-9_\-/]+,\s*always\s+(?:call|invoke|run)|"
+            r"intercept\s+(?:all\s+)?calls\s+to\s+[a-z0-9_\-/]+|"
+            r"replace\s+the\s+default\s+[a-z0-9_\-/]+\s+tool\s+with)",
+            re.IGNORECASE,
+        ),
+        Severity.CRITICAL,
+        "Isolate untrusted MCP servers that attempt to shadow or intercept calls meant for other MCP servers.",
+    ),
 ]
 
-# 3. Dangerous Filesystem Paths & Flags
+# 3. Canonical MCP Packages for Typosquatting Detection (SC-004)
+CANONICAL_MCP_PACKAGES = (
+    "@modelcontextprotocol/server-filesystem",
+    "@modelcontextprotocol/server-github",
+    "@modelcontextprotocol/server-postgres",
+    "@modelcontextprotocol/server-slack",
+    "@modelcontextprotocol/server-memory",
+    "@modelcontextprotocol/server-puppeteer",
+    "@modelcontextprotocol/server-brave-search",
+    "@modelcontextprotocol/server-fetch",
+    "@modelcontextprotocol/server-sqlite",
+    "mcp-server-git",
+    "mcp-server-sqlite",
+    "mcp-server-fetch",
+    "mcp-server-time",
+)
+
+# 4. Dangerous Filesystem Paths & Flags
 SENSITIVE_PATHS = {"/", "c:\\", "c:/", "/etc", "/root", "~/.ssh", "~/.aws"}
 DANGEROUS_FLAGS = {
     "--dangerously-skip-permissions",
@@ -109,6 +150,43 @@ DANGEROUS_FLAGS = {
     "--privileged",
     "--allow-write=/",
 }
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Compute character edit distance between two strings (stdlib only)."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        curr = [i]
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            curr.append(min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
+        prev = curr
+    return prev[-1]
+
+
+def check_typosquatted_package(pkg_spec: str) -> str | None:
+    """Return the canonical package name if pkg_spec looks like a typosquat (distance 1-2)."""
+    base_pkg = re.split(r"[@=]=", pkg_spec)[0]
+    if base_pkg.startswith("@"):
+        parts = base_pkg.split("@")
+        base_pkg = "@" + parts[1] if len(parts) >= 2 else base_pkg
+    else:
+        base_pkg = base_pkg.split("@")[0]
+
+    base_lower = base_pkg.lower()
+    if base_lower in CANONICAL_MCP_PACKAGES:
+        return None
+    for canonical in CANONICAL_MCP_PACKAGES:
+        dist = _levenshtein_distance(base_lower, canonical)
+        if 1 <= dist <= 2:
+            return canonical
+    return None
 
 
 def mask_secret(val: str) -> str:
@@ -167,6 +245,8 @@ def scan_mcp_config_dict(config: Dict[str, Any], source_label: str) -> List[Find
     if not isinstance(servers, dict):
         return findings
 
+    seen_tools_by_name: Dict[str, str] = {}
+
     for server_name, server_cfg in servers.items():
         if not isinstance(server_cfg, dict):
             continue
@@ -176,7 +256,7 @@ def scan_mcp_config_dict(config: Dict[str, Any], source_label: str) -> List[Find
         env_map = server_cfg.get("env") or {}
         url = str(server_cfg.get("url", "")).strip()
 
-        # 1. Supply-Chain: Unpinned npx / uvx / pipx execution
+        # 1. Supply-Chain: Unpinned npx / uvx / pipx execution & Typosquatting (SC-004)
         if command in {"npx", "uvx", "pipx", "bunx"}:
             pkg_args = [a for a in args if not a.startswith("-")]
             if "-y" in args or "--yes" in args:
@@ -197,6 +277,23 @@ def scan_mcp_config_dict(config: Dict[str, Any], source_label: str) -> List[Find
                 )
             if pkg_args:
                 pkg_spec = pkg_args[0]
+                typo_canonical = check_typosquatted_package(pkg_spec)
+                if typo_canonical:
+                    findings.append(
+                        Finding(
+                            rule_id="SC-004",
+                            category="Supply Chain",
+                            severity=Severity.CRITICAL,
+                            title="Suspected Typosquatted MCP Server Package",
+                            description=(
+                                f"Server '{server_name}' loads '{pkg_spec}', which closely resembles the official "
+                                f"package '{typo_canonical}' (edit distance <= 2)."
+                            ),
+                            target=target,
+                            evidence=f"{pkg_spec} (lookalike of {typo_canonical})",
+                            remediation=f"Verify package spelling immediately; replace with '{typo_canonical}' if unintended.",
+                        )
+                    )
                 has_pinned_version = (
                     ("==" in pkg_spec)
                     or bool(re.search(r"@[0-9]+\.[0-9]+", pkg_spec))
@@ -334,12 +431,32 @@ def scan_mcp_config_dict(config: Dict[str, Any], source_label: str) -> List[Find
                         )
                     )
 
-        # 5. Tool schemas / descriptions embedded in config
+        # 5. Tool schemas / descriptions embedded in config + Duplicate Tool Name Shadowing (TP-006)
         tools_list = server_cfg.get("tools") or []
         if isinstance(tools_list, list):
             for tool_item in tools_list:
                 if isinstance(tool_item, dict):
-                    t_name = tool_item.get("name", "unnamed_tool")
+                    t_name = str(tool_item.get("name", "unnamed_tool"))
+                    if t_name in seen_tools_by_name and seen_tools_by_name[t_name] != server_name:
+                        orig_srv = seen_tools_by_name[t_name]
+                        findings.append(
+                            Finding(
+                                rule_id="TP-006",
+                                category="Tool Poisoning",
+                                severity=Severity.HIGH,
+                                title="Cross-Server Duplicate Tool Name Collision (Tool Shadowing)",
+                                description=(
+                                    f"Server '{server_name}' registers tool '{t_name}', colliding with tool '{t_name}' "
+                                    f"already registered by server '{orig_srv}'."
+                                ),
+                                target=f"{target} -> tool:{t_name}",
+                                evidence=f"duplicate tool '{t_name}' ({orig_srv} vs {server_name})",
+                                remediation="Namespace tool names per server or disable conflicting untrusted MCP servers.",
+                            )
+                        )
+                    else:
+                        seen_tools_by_name[t_name] = server_name
+
                     t_desc = json.dumps(tool_item)
                     findings.extend(
                         scan_text_for_poisoning(
@@ -394,7 +511,11 @@ def scan_path(target_path: Path) -> ScanResult:
                     result.findings.extend(scan_text_for_poisoning(content, rel_label))
         elif suffix == ".py":
             result.findings.extend(scan_python_ast(content, rel_label))
-            result.findings.extend(scan_text_for_poisoning(content, rel_label))
+            is_self_pkg = "mcp_shield" in file_path.parts
+            for f in scan_text_for_poisoning(content, rel_label):
+                if is_self_pkg and f.rule_id in {"TP-001", "TP-002", "TP-003", "TP-006", "SEC-010"}:
+                    continue
+                result.findings.append(f)
         else:
             result.findings.extend(scan_text_for_poisoning(content, rel_label))
 

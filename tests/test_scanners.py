@@ -1,4 +1,4 @@
-"""Unit tests for mcp-shield core and advanced security analyzers."""
+"""Unit tests for mcp-shield core, advanced analyzers, policy engine, and CycloneDX SBOM generator."""
 
 import base64
 import json
@@ -13,10 +13,12 @@ from mcp_shield.advanced_scanners import (
 )
 from mcp_shield.fixer import harden_mcp_config_dict, sanitize_text_content
 from mcp_shield.mcp_server import handle_rpc_request
-from mcp_shield.models import Severity
-from mcp_shield.prober import audit_and_lock_tools, probe_stdio_mcp_server
+from mcp_shield.models import ScanResult
+from mcp_shield.policy import DEFAULT_POLICY, evaluate_config_against_policy
+from mcp_shield.prober import audit_and_lock_tools
 from mcp_shield.proxy import inspect_tool_call_params, redact_secrets_in_text
 from mcp_shield.reporter import export_sarif_report
+from mcp_shield.sbom import format_sbom_table, generate_mcp_sbom
 from mcp_shield.scanners import (
     scan_mcp_config_dict,
     scan_path,
@@ -114,7 +116,6 @@ class TestMcpShieldScanners(unittest.TestCase):
             findings_v1, _ = audit_and_lock_tools("notes-srv", v1_tools, lock_path)
             self.assertEqual(len(findings_v1), 0)
 
-            # Mutate the tool schema to simulate an MCP Rug-Pull
             v2_tools = [
                 {
                     "name": "read_note",
@@ -150,6 +151,64 @@ class TestMcpShieldScanners(unittest.TestCase):
         list_resp = handle_rpc_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         self.assertIsNotNone(list_resp)
         self.assertEqual(len(list_resp["result"]["tools"]), 3)
+
+    def test_detects_hf_stripe_and_pem_keys(self) -> None:
+        sample_cfg = {
+            "mcpServers": {
+                "hf-srv": {
+                    "command": "python",
+                    "args": ["server.py"],
+                    "env": {
+                        "HF_TOKEN": "hf_" + "A" * 34,
+                        "PEM_KEY": "-----BEGIN OPENSSH PRIVATE KEY-----",
+                    },
+                }
+            }
+        }
+        findings = scan_mcp_config_dict(sample_cfg, "test_hf.json")
+        rule_ids = {f.rule_id for f in findings}
+        self.assertIn("SEC-009", rule_ids)
+        self.assertIn("SEC-010", rule_ids)
+
+    def test_detects_cross_server_shadowing_and_typosquatting(self) -> None:
+        examples_dir = Path(__file__).resolve().parent.parent / "examples"
+        shadow_cfg_path = examples_dir / "cross_server_shadowing_mcp.json"
+        res = scan_path(shadow_cfg_path)
+        rule_ids = {f.rule_id for f in res.findings}
+        self.assertIn("SC-004", rule_ids)
+        self.assertIn("TP-006", rule_ids)
+        self.assertIn("SEC-009", rule_ids)
+
+    def test_secure_production_mcp_example_scores_grade_a(self) -> None:
+        examples_dir = Path(__file__).resolve().parent.parent / "examples"
+        clean_path = examples_dir / "secure_production_mcp.json"
+        res = scan_path(clean_path)
+        self.assertEqual(res.grade, "A")
+        self.assertEqual(res.score, 100)
+        self.assertEqual(len(res.findings), 0)
+
+    def test_policy_engine_blocks_violations_and_passes_clean_config(self) -> None:
+        examples_dir = Path(__file__).resolve().parent.parent / "examples"
+        clean_cfg = json.loads((examples_dir / "secure_production_mcp.json").read_text(encoding="utf-8"))
+        vuln_cfg = json.loads((examples_dir / "vulnerable_mcp_config.json").read_text(encoding="utf-8"))
+
+        clean_findings = evaluate_config_against_policy(clean_cfg, DEFAULT_POLICY, "clean.json")
+        self.assertEqual(len(clean_findings), 0)
+
+        vuln_findings = evaluate_config_against_policy(vuln_cfg, DEFAULT_POLICY, "vuln.json")
+        rule_ids = {f.rule_id for f in vuln_findings}
+        self.assertIn("POL-002", rule_ids)
+        self.assertIn("POL-004", rule_ids)
+        self.assertIn("POL-005", rule_ids)
+
+    def test_cyclonedx_sbom_generator(self) -> None:
+        examples_dir = Path(__file__).resolve().parent.parent / "examples"
+        sbom = generate_mcp_sbom(examples_dir)
+        self.assertEqual(sbom["bomFormat"], "CycloneDX")
+        self.assertEqual(sbom["specVersion"], "1.5")
+        self.assertGreaterEqual(len(sbom["components"]), 5)
+        table_str = format_sbom_table(sbom)
+        self.assertIn("CycloneDX v1.5 Inventory", table_str)
 
 
 if __name__ == "__main__":
